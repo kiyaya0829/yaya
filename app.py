@@ -15,7 +15,7 @@ from key_store import load_key, save_key
 
 
 class App:
-    def __init__(self, root, journal):
+    def __init__(self, root, journal, auto_update=True):
         self.root, self.journal = root, journal
         self.selected = None
         self.rows = {}
@@ -26,7 +26,7 @@ class App:
         self.quote_window = None
         root.title(f"Yaya 交易日记 · {VERSION}")
         root.geometry("1120x760")
-        root.minsize(900, 650)
+        root.minsize(640, 480)
         root.configure(bg="#f4f6fa")
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -38,8 +38,38 @@ class App:
         style.configure("Treeview", font=("Microsoft YaHei UI", 10), rowheight=32, background="white", fieldbackground="white")
         style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"), padding=8)
         style.map("Treeview", background=[("selected", "#dce8fa")], foreground=[("selected", "#172b4d")])
-        outer = ttk.Frame(root, padding=24)
-        outer.pack(fill="both", expand=True)
+        # Reserve the action bar before allocating the scrollable content.
+        buttons = ttk.Frame(root, padding=(16, 10))
+        buttons.pack(side='bottom', fill='x')
+        self.save_button = ttk.Button(buttons, text='保存记录', command=self.save)
+        self.save_button.pack(side='left')
+        ttk.Button(buttons, text='新建 / 清空', command=self.new).pack(side='left', padx=8)
+        self.delete_button = ttk.Button(buttons, text='删除所选', command=self.delete, state='disabled')
+        self.delete_button.pack(side='right')
+        root.bind('<Control-s>', lambda event: self.save())
+        viewport = ttk.Frame(root)
+        viewport.pack(fill='both', expand=True)
+        viewport.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+        self.content_canvas = canvas = tk.Canvas(viewport, highlightthickness=0, bg='#f4f6fa')
+        canvas.grid(row=0, column=0, sticky='nsew')
+        ttk.Scrollbar(viewport, orient='vertical', command=canvas.yview).grid(row=0, column=1, sticky='ns')
+        ttk.Scrollbar(viewport, orient='horizontal', command=canvas.xview).grid(row=1, column=0, sticky='ew')
+        bars = viewport.grid_slaves()
+        for bar in bars:
+            if isinstance(bar, ttk.Scrollbar):
+                canvas.configure(**({'yscrollcommand': bar.set} if str(bar.cget('orient')) == 'vertical' else {'xscrollcommand': bar.set}))
+        outer = ttk.Frame(canvas, padding=16)
+        content_id = canvas.create_window(0, 0, window=outer, anchor='nw')
+        def resize_content(event=None):
+            canvas.itemconfigure(content_id, width=max(canvas.winfo_width(), outer.winfo_reqwidth()))
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        outer.bind('<Configure>', resize_content)
+        canvas.bind('<Configure>', resize_content)
+        def scroll_content(event):
+            if event.widget.winfo_toplevel() == root and not isinstance(event.widget, (tk.Text, ttk.Treeview, ttk.Combobox)):
+                canvas.yview_scroll(-int(event.delta / 120), 'units')
+        root.bind('<MouseWheel>', scroll_content, add='+')
         ttk.Label(outer, text="Yaya 交易日记", style="Title.TLabel").pack(anchor="w")
         ttk.Label(outer, text="记下每次决定，也留一点空间给下一次成长。", style="Muted.TLabel").pack(anchor="w", pady=(4, 18))
         quote_bar = ttk.Frame(outer)
@@ -59,7 +89,7 @@ class App:
         table = ttk.Frame(outer)
         table.pack(fill="both", expand=True)
         columns = ("date", "market", "symbol", "side", "currency", "price", "quantity", "note")
-        self.tree = ttk.Treeview(table, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(table, columns=columns, show="headings", selectmode="browse", height=6)
         for col, label, width in zip(columns, ("日期", "市场", "股票代码", "方向", "币种", "成交价", "数量", "笔记"), (105, 65, 100, 60, 60, 100, 100, 220)):
             self.tree.heading(col, text=label)
             self.tree.column(col, width=width, minwidth=55, stretch=col == "note")
@@ -95,16 +125,11 @@ class App:
         ttk.Label(outer, text="交易理由 / 复盘笔记").pack(anchor="w")
         self.note = tk.Text(outer, height=4, wrap="word", font=("Microsoft YaHei UI", 10), relief="solid", borderwidth=1, padx=10, pady=8, undo=True)
         self.note.pack(fill="x", pady=(5, 12))
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x")
-        ttk.Button(buttons, text="保存记录", command=self.save).pack(side="left")
-        ttk.Button(buttons, text="新建 / 清空", command=self.new).pack(side="left", padx=8)
-        self.delete_button = ttk.Button(buttons, text="删除所选", command=self.delete, state="disabled")
-        self.delete_button.pack(side="right")
         ttk.Label(outer, text="交易本机保存 · 清仓停止行情更新，保留历史记录 · 不连接券商", style="Muted.TLabel").pack(anchor="w", pady=(14, 0))
         root.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
-        self.root.after(500, self.update_quotes)
+        if auto_update:
+            self.root.after(500, self.update_quotes)
 
     def values(self):
         return {**{key: var.get().strip() for key, var in self.fields.items()}, "note": self.note.get("1.0", "end-1c")}

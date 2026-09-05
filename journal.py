@@ -7,7 +7,7 @@ import os
 import re
 import sqlite3
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 
 def default_path():
