@@ -7,7 +7,7 @@ import os
 import re
 import sqlite3
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 
 def default_path():
@@ -56,19 +56,43 @@ class Journal:
             currency TEXT NOT NULL, price TEXT NOT NULL, quantity TEXT NOT NULL,
             traded_on TEXT NOT NULL, note TEXT NOT NULL)""")
         self.db.commit()
+        if 'market' not in [r[1] for r in self.db.execute('PRAGMA table_info(trades)')]:
+            with self.db:
+                self.db.execute("ALTER TABLE trades ADD COLUMN market TEXT NOT NULL DEFAULT '待确认'")
 
-    def save(self, *, trade_id=None, **fields):
+    def save(self, *, trade_id=None, market='待确认', **fields):
         values = validate(**fields)
+        if market not in ('US', '其他', '待确认'):
+            raise ValueError('请选择市场。')
+        if market == 'US' and (values[2] != 'USD' or not re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,14}', values[0])):
+            raise ValueError('美股需使用 USD 和有效美股代码，例如 AAPL、BRK.B。')
         with self.db:
             if trade_id is None:
-                return self.db.execute("""INSERT INTO trades
-                    (symbol,side,currency,price,quantity,traded_on,note)
-                    VALUES (?,?,?,?,?,?,?)""", values).lastrowid
-            cursor = self.db.execute("""UPDATE trades SET symbol=?,side=?,currency=?,
-                price=?,quantity=?,traded_on=?,note=? WHERE id=?""", (*values, trade_id))
-            if cursor.rowcount != 1:
-                raise ValueError("这条记录已不存在，请刷新后再试。")
+                trade_id = self.db.execute("""INSERT INTO trades
+                    (symbol,side,currency,price,quantity,traded_on,note,market)
+                    VALUES (?,?,?,?,?,?,?,?)""", (*values, market)).lastrowid
+            else:
+                cursor = self.db.execute("""UPDATE trades SET symbol=?,side=?,currency=?,
+                    price=?,quantity=?,traded_on=?,note=?,market=? WHERE id=?""", (*values, market, trade_id))
+                if cursor.rowcount != 1:
+                    raise ValueError("这条记录已不存在，请刷新后再试。")
+            self.check_positions()
             return trade_id
+
+    def check_positions(self):
+        balances = {}
+        for row in self.db.execute("SELECT * FROM trades WHERE market='US' ORDER BY traded_on,id"):
+            key = row['symbol']
+            balances[key] = balances.get(key, Decimal(0)) + Decimal(row['quantity']) * (1 if row['side'] == '买入' else -1)
+            if balances[key] < 0:
+                raise ValueError(f"{key} 的卖出数量超过此前已记录买入，请先补全买入记录（同日按录入顺序）。")
+
+    def positions(self):
+        balances = {}
+        for row in self.db.execute("SELECT * FROM trades WHERE market='US' AND traded_on<=?", (date.today().isoformat(),)):
+            key = row['symbol']
+            balances[key] = balances.get(key, Decimal(0)) + Decimal(row['quantity']) * (1 if row['side'] == '买入' else -1)
+        return {k: v for k, v in sorted(balances.items()) if v > 0}
 
     def all(self, query=""):
         rows = self.db.execute("SELECT * FROM trades ORDER BY traded_on DESC, id DESC").fetchall()
@@ -78,6 +102,7 @@ class Journal:
     def delete(self, trade_id):
         with self.db:
             self.db.execute("DELETE FROM trades WHERE id=?", (trade_id,))
+            self.check_positions()
 
     def backup(self, destination):
         if Path(destination).resolve() == self.path.resolve():

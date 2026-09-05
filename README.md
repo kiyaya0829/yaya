@@ -1,32 +1,48 @@
-# Yaya 交易日记
+# Yaya 交易日记 · 0.2.0
 
-一个轻量的 Windows 桌面交易日记。手动记录每笔买卖和决策理由，数据仅保存在本机。
+Windows 桌面交易日记：记录交易、复盘、备份，并在打开软件时后台更新美股持仓收盘行情。
 
-## 第一版 · 0.1.0
+## 使用
 
-- 添加、修改、删除交易记录；删除前确认。
-- 股票代码、买入/卖出、币种、成交价、数量、日期、交易理由和复盘笔记。
-- 按代码或笔记搜索，日期倒序展示，支持小数数量。
-- SQLite 本机存储；价格和数量以精确十进制文本保存。
-- 一键备份数据库。
+从 GitHub Actions 下载 YayaJournal-Windows-x64，解压后双击 YayaJournal.exe。无需安装 Python。程序未签名。
 
-没有实时行情、券商连接、自动交易或盈亏计算。不同币种不合并统计。
+1. 在「行情设置」中打开申请链接，获取个人 Alpha Vantage API Key，在软件内填写并保存。无需将密钥发给任何人。
+2. 新增记录选择市场 US、币种 USD，填写美股代码（例如 AAPL）、买入数量和价格。
+3. 打开「美股持仓 / 收盘行情」查看当前持仓。打开软件时自动检查更新，也可点击「更新收盘价」。网络访问在后台进行。
+4. 交易页包含全部历史记录，支持编辑、删除、搜索和数据库备份。
 
-## Windows 使用
+首次升级：旧记录全部保留，市场标记为「待确认」，不会按币种猜测市场。请按时间顺序先确认买入，再确认卖出为 US。其他市场记录继续保留，但不获取行情。
 
-在 GitHub Actions 的成功构建中下载 `YayaJournal-Windows-x64`，解压后双击 `YayaJournal.exe`。不需要安装 Python。当前构建为测试版本，尚未签名。
+## 行情与持仓规则
 
-点击列表中的记录即可修改，点“保存记录”提交修改；点“新建 / 清空”开始另一条记录。切换记录或清空表单会放弃尚未保存的输入，请先保存。
+- 同一 US 代码累计买入减卖出；部分卖出继续更新，清仓停止更新，再次买入恢复。
+- 卖出不能超过此前记录的买入，同日按录入顺序检查。修改、删除也检查此规则。仅支持普通多头，暂不处理拆股、转仓、做空。
+- 所有持仓必须在同一个已完成交易日取得收盘价，整批才发布。
+- 一批不齐，显示上一批完整报价；首次或新增股票导致无完整批次时，所有价格显示「准备中」。已取得报价继续缓存，不重复请求。
+- 按 XNYS 交易日历判断美国节假日、提前收市、夏令时；数据商可能晚于收盘更新，尚未取得目标日期时不冒充最新报价。临时休市可能需要日历库更新。
+- 请求失败或目标日尚未更新，同一股票同一目标日一小时内不重复请求；可稍后再打开或手动更新。软件关闭时不采集。
+- 本机使用保守的滚动 24 小时最多 25 次请求限制，失败请求也计入。真实账号额度还可能被其他软件使用。
+- 超过 25 只持仓时提示免费方案不足，不自动删除记录或优先更新一部分股票。
+- 报价为 Alpha Vantage 未复权日收盘价、USD，显示美国交易日期。不会覆盖实际成交价。本版不显示总资产或盈亏，避免持仓与价格时间、公司行动处理尚不完整导致误导。
 
-数据默认保存在 `%LOCALAPPDATA%\YayaJournal\journal.sqlite3`，与程序分开；替换程序不会清除记录。数据和备份未加密，请将它们保存在自己的电脑上。
+## 本机数据与密钥
 
-点“备份记录”另存数据库。恢复时先关闭程序，备份当前数据库，再将需要恢复的备份复制到上述位置并命名为 `journal.sqlite3`。不要将个人数据库提交到 GitHub。
+默认数据库：%LOCALAPPDATA%\YayaJournal\journal.sqlite3。替换程序不会删除记录。数据库及备份未加密，包含交易和缓存行情。
 
-## 从源码运行
+个人 API Key 由 Windows DPAPI 按当前 Windows 用户保护，独立存放为 api-key.dpapi，不包含在日记备份中。移到其他电脑后重新填写。行情设置留空保存可移除；已保存密钥不回显。开发时可使用 ALPHAVANTAGE_API_KEY 环境变量，其优先级高于保存值。
 
-需要 Python 3.12（含 Tkinter）。运行时无第三方依赖。
+仅向 Alpha Vantage 请求持仓代码及 API Key，不发送买卖数量、成交价或笔记。不要将个人密钥或数据库提交到仓库。
+
+「备份记录」导出 SQLite 数据库。恢复前关闭程序，先备份当前数据库，再将要恢复的备份复制至上述目录并改名 journal.sqlite3。
+
+切换记录或关闭前请先保存，未保存的表单输入不会自动保存。
+
+## 源码运行与验证
+
+需要 Python 3.12（含 Tkinter）。
 
 ```powershell
+python -m pip install -r requirements.txt
 python app.py
 python -m unittest discover -v
 python app.py --smoke-test
@@ -34,26 +50,17 @@ python app.py --smoke-test
 
 可用 `python app.py --data-dir ./local-data` 指定数据目录。
 
-## Windows 打包
+测试使用模拟响应，不消耗个人行情额度；覆盖旧数据库升级、持仓、整批发布、额度、重启缓存及交易日历。界面和打包自检还验证持仓窗口与 Windows 密钥保护。真实账号连接需配置个人 Key 后验证。
+
+## 构建和发布
 
 ```powershell
-python -m pip install -r requirements-build.txt
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name YayaJournal app.py
+python -m pip install -r requirements.txt -r requirements-build.txt
+python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all exchange_calendars --collect-all tzdata --name YayaJournal app.py
 ```
 
-产物：`dist/YayaJournal.exe`。必须在 Windows 上构建 Windows 可执行文件。
-打包方式参考 [PyInstaller 官方文档](https://pyinstaller.org/en/stable/usage.html)。
+GitHub Actions 在开发分支、main 提交、PR 或手动触发后测试、构建并验证 Windows exe，上传程序、说明、SHA-256 校验文件，保留 30 天。仅 contents:read 权限，不创建 tag 或 Release。
 
-## 自动构建与待确认发布
+发布前先下载试用，确认版本、对应提交、构建产物和发布说明。只有得到仓库所有者明确确认后才创建 tag 或 Release。
 
-`.github/workflows/build.yml` 在 main / feature 分支提交、PR 或手动运行时，测试存储与界面、打包 Windows x64 程序、验证程序启动，并上传 exe、说明和 SHA-256 校验文件，保留 30 天。参见 [GitHub artifact 文档](https://github.com/actions/upload-artifact)。
-
-工作流只有 contents:read 权限，不会创建 tag 或 Release。
-
-发布前：
-
-1. 确认 Actions 全部通过，下载并在 Windows 上试用新增、编辑、删除、重启与备份。
-2. 确定版本号、对应提交、发布说明与构建产物。
-3. 获得仓库所有者明确确认后，才创建版本 tag 和 GitHub Release 并附上产物。
-
-首版拟用 `v0.1.0`，目前未创建 tag 或 Release。
+参考：[Alpha Vantage 日线](https://www.alphavantage.co/documentation/#daily)、[免费额度与申请](https://www.alphavantage.co/support/)、[交易日历](https://pypi.org/project/exchange-calendars/4.11.2/)。
