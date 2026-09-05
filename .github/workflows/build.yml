@@ -1,0 +1,50 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: ['main', 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test data storage
+        run: python -m pip install -r requirements.txt
+      - name: Test journal and quote rules
+        run: python -m unittest discover -v
+      - name: Test desktop interface
+        run: python app.py --smoke-test
+      - name: Verify save button at small sizes and high DPI
+        run: python check_layout.py
+      - name: Install packaging tools
+        run: python -m pip install -r requirements-build.txt
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all exchange_calendars --collect-all tzdata --name YayaJournal app.py
+      - name: Test executable and prepare checksum
+        shell: pwsh
+        run: |
+          $app = Start-Process -FilePath .\dist\YayaJournal.exe -ArgumentList '--smoke-test' -PassThru -WindowStyle Hidden
+          if (-not $app.WaitForExit(60000)) { $app.Kill(); throw 'Packaged app timed out' }
+          if ($app.ExitCode -ne 0) { throw "Packaged app failed: $($app.ExitCode)" }
+          Copy-Item README.md dist\README.md
+          $hash = (Get-FileHash dist\YayaJournal.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  YayaJournal.exe" | Set-Content dist\SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YayaJournal-Windows-x64
+          path: |
+            dist/YayaJournal.exe
+            dist/README.md
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
