@@ -76,6 +76,8 @@ class App:
         quote_bar.pack(fill='x', pady=(0, 10))
         ttk.Button(quote_bar, text='美股持仓 / 收盘行情', command=self.show_positions).pack(side='left')
         ttk.Button(quote_bar, text='更新收盘价', command=self.update_quotes).pack(side='left', padx=6)
+        ttk.Button(quote_bar, text='盈亏总览', command=self.show_pnl).pack(side='left', padx=6)
+        ttk.Button(quote_bar, text='导出 Excel', command=self.export_pnl).pack(side='left')
         ttk.Button(quote_bar, text='行情设置', command=self.quote_settings).pack(side='right')
         self.quote_status = tk.StringVar(value='打开时自动检查收盘行情；交易记录始终保存在本机。')
         ttk.Label(outer, textvariable=self.quote_status, wraplength=1020, style='Muted.TLabel').pack(anchor='w', pady=(0, 10))
@@ -112,6 +114,7 @@ class App:
         specs = [("market", "市场", "US", ['US', '其他', '待确认']), ("symbol", "股票代码", "", None), ("side", "方向", "买入", ["买入", "卖出"]),
                  ("currency", "币种", "USD", ["USD", "HKD", "CNY", "SGD", "EUR", "JPY", "GBP"]),
                  ("price", "成交价", "", None), ("quantity", "数量", "", None),
+                 ("fee", "手续费", "0", None),
                  ("traded_on", "日期 YYYY-MM-DD", date.today().isoformat(), None)]
         for i, (key, label, value, choices) in enumerate(specs):
             form.columnconfigure(i, weight=1)
@@ -159,7 +162,7 @@ class App:
         self.selected = None
         self.tree.selection_remove(*self.tree.selection())
         for key, variable in self.fields.items():
-            variable.set({"market": "US", "side": "买入", "currency": "USD", "traded_on": date.today().isoformat()}.get(key, ""))
+            variable.set({"market": "US", "side": "买入", "currency": "USD", "fee": "0", "traded_on": date.today().isoformat()}.get(key, ""))
         self.note.delete("1.0", "end")
         self.editor_title.set("新增交易")
         self.delete_button.configure(state="disabled")
@@ -214,6 +217,69 @@ class App:
         ttk.Button(controls, text='取消', command=window.destroy).pack(side='left', padx=8)
         import webbrowser
         ttk.Button(controls, text='申请免费 API Key', command=lambda: webbrowser.open('https://www.alphavantage.co/support/#api-key')).pack(side='right')
+
+    def export_pnl(self, data=None):
+        from pnl import report, default_date
+        from export_pnl import export_report
+        try:
+            data = data or report(self.journal, default_date(self.journal))
+            target = filedialog.asksaveasfilename(parent=self.root, title=f"导出盈亏（截至 {data['as_of']}）", defaultextension='.xlsx', initialfile=f"Yaya-PnL-{data['as_of']}.xlsx", filetypes=[('Excel 工作簿','*.xlsx')])
+            if target:
+                export_report(data, target)
+                messagebox.showinfo('导出成功',f"已导出截至 {data['as_of']} 的汇总、交易明细和计算说明。",parent=self.root)
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            messagebox.showerror('无法导出',str(exc),parent=self.root)
+
+    def show_pnl(self):
+        from pnl import report, default_date, money
+        window = tk.Toplevel(self.root)
+        window.title('Yaya · 盈亏总览（USD）')
+        window.geometry('1100x580')
+        window.minsize(640,400)
+        box = ttk.Frame(window,padding=16)
+        box.pack(fill='both',expand=True)
+        toolbar = ttk.Frame(box)
+        toolbar.pack(fill='x')
+        ttk.Label(toolbar,text='估值日 YYYY-MM-DD').pack(side='left')
+        day = tk.StringVar(value=default_date(self.journal))
+        ttk.Entry(toolbar,textvariable=day,width=14).pack(side='left',padx=8)
+        summary = tk.StringVar()
+        summary_label = ttk.Label(box,textvariable=summary,wraplength=1000)
+        summary_label.pack(fill='x',pady=12)
+        foot = ttk.Label(box,text='移动加权平均 · 手续费已计入 · 仅 US/USD 普通买卖\n旧版手续费默认为 0，请补全；不含拆股、分红、转仓及税务处理。',wraplength=1000)
+        foot.pack(side='bottom',fill='x',pady=10)
+        frame = ttk.Frame(box)
+        frame.pack(fill='both',expand=True)
+        frame.columnconfigure(0,weight=1)
+        frame.rowconfigure(0,weight=1)
+        fields = ('symbol','quantity','average','cost','close','value','realized','unrealized','total','status')
+        tree = ttk.Treeview(frame,columns=fields,show='headings')
+        for key,title in zip(fields,('股票','当日持仓','平均成本','剩余成本','当日收盘','收盘估值','已实现盈亏','浮动盈亏','合计盈亏','状态')):
+            tree.heading(key,text=title)
+            tree.column(key,width=120,stretch=False)
+        tree.grid(row=0,column=0,sticky='nsew')
+        vertical = ttk.Scrollbar(frame,orient='vertical',command=tree.yview)
+        horizontal = ttk.Scrollbar(frame,orient='horizontal',command=tree.xview)
+        vertical.grid(row=0,column=1,sticky='ns')
+        horizontal.grid(row=1,column=0,sticky='ew')
+        tree.configure(yscrollcommand=vertical.set,xscrollcommand=horizontal.set)
+        def calculate(export=False):
+            try:
+                data = report(self.journal,day.get().strip())
+            except (ValueError,sqlite3.Error) as exc:
+                messagebox.showerror('无法计算',str(exc),parent=window)
+                return
+            tree.delete(*tree.get_children())
+            for row in data['rows']:
+                tree.insert('', 'end',values=[row[k] if k in ('symbol','status') else (str(row[k]) if k=='quantity' else money(row[k])) for k in fields])
+            totals=data['totals']
+            summary.set(f"截至 {data['as_of']}（所有盈亏同一日期）\n已实现：{money(totals['realized'])}  浮动：{money(totals['unrealized'])}  合计：{money(totals['total'])} USD\n未计入汇总的记录：{data['excluded']} 条（其他市场、待确认或晚于估值日）；缺价显示待补齐。")
+            if export:
+                self.export_pnl(data)
+        ttk.Button(toolbar,text='按日期计算',command=calculate).pack(side='left')
+        ttk.Button(toolbar,text='导出此日期 Excel',command=lambda: calculate(True)).pack(side='right')
+        box.bind('<Configure>',lambda e: (summary_label.configure(wraplength=max(300,e.width-32)),foot.configure(wraplength=max(300,e.width-32))))
+        calculate()
 
     def show_positions(self):
         if self.quote_window is not None and self.quote_window.winfo_exists():
@@ -320,6 +386,11 @@ def main():
             app.quote_book.update('fixture', target='2026-09-04', fetcher=lambda *args: {'2026-09-04':'11.25'}, pause=lambda _: None)
             app.show_positions()
             assert app.quote_book.snapshot()[0] == '2026-09-04'
+            app.show_pnl()
+            from pnl import report
+            from export_pnl import export_report
+            export_report(report(app.journal,'2026-09-04'),Path(directory)/'pnl.xlsx')
+            assert (Path(directory)/'pnl.xlsx').exists()
             iid = app.tree.get_children()[0]
             app.tree.selection_set(iid)
             app.select()

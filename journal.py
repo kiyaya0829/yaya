@@ -7,7 +7,7 @@ import os
 import re
 import sqlite3
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 
 def default_path():
@@ -59,9 +59,19 @@ class Journal:
         if 'market' not in [r[1] for r in self.db.execute('PRAGMA table_info(trades)')]:
             with self.db:
                 self.db.execute("ALTER TABLE trades ADD COLUMN market TEXT NOT NULL DEFAULT '待确认'")
+        if 'fee' not in [r[1] for r in self.db.execute('PRAGMA table_info(trades)')]:
+            with self.db:
+                self.db.execute("ALTER TABLE trades ADD COLUMN fee TEXT NOT NULL DEFAULT '0'")
 
-    def save(self, *, trade_id=None, market='待确认', **fields):
+    def save(self, *, trade_id=None, market='待确认', fee='0', **fields):
         values = validate(**fields)
+        try:
+            fee = Decimal(str(fee).strip())
+            if not fee.is_finite() or fee < 0 or fee >= Decimal('1e12') or fee.as_tuple().exponent < -8:
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            raise ValueError('手续费需为非负数字，小于一万亿，最多 8 位小数。') from None
+        fee = format(fee, 'f')
         if market not in ('US', '其他', '待确认'):
             raise ValueError('请选择市场。')
         if market == 'US' and (values[2] != 'USD' or not re.fullmatch(r'[A-Z][A-Z0-9.\-]{0,14}', values[0])):
@@ -69,11 +79,11 @@ class Journal:
         with self.db:
             if trade_id is None:
                 trade_id = self.db.execute("""INSERT INTO trades
-                    (symbol,side,currency,price,quantity,traded_on,note,market)
-                    VALUES (?,?,?,?,?,?,?,?)""", (*values, market)).lastrowid
+                    (symbol,side,currency,price,quantity,traded_on,note,market,fee)
+                    VALUES (?,?,?,?,?,?,?,?,?)""", (*values, market, fee)).lastrowid
             else:
                 cursor = self.db.execute("""UPDATE trades SET symbol=?,side=?,currency=?,
-                    price=?,quantity=?,traded_on=?,note=?,market=? WHERE id=?""", (*values, market, trade_id))
+                    price=?,quantity=?,traded_on=?,note=?,market=?,fee=? WHERE id=?""", (*values, market, fee, trade_id))
                 if cursor.rowcount != 1:
                     raise ValueError("这条记录已不存在，请刷新后再试。")
             self.check_positions()
